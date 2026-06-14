@@ -49,34 +49,55 @@ const QUOTES = {
 };
 const pick = arr => arr[Math.random() * arr.length | 0];
 
+const PAP_QUOTES = {
+  start:   ["NYEH HEH HEH! A HUMAN!","I, THE GREAT PAPYRUS, SHALL CAPTURE YOU!","PREPARE YOURSELF, HUMAN!","MY SPAGHETTI AWAITS YOUR DEFEAT!"],
+  t15:     ["NOT BAD FOR A HUMAN!","NYEH HEH HEH! YOU'RE OKAY!","DON'T THINK I'M IMPRESSED! ...OKAY, MAYBE A LITTLE."],
+  t30:     ["YOU'RE ACTUALLY GOOD AT THIS.","I AM BECOMING EVEN MORE INCREDIBLE!","NYEH... I UNDERESTIMATED YOU."],
+  t60:     ["EXTRAORDINARY! A WORTHY OPPONENT!","I, PAPYRUS, AM GENUINELY TRYING NOW!","THIS IS A REAL BATTLE!"],
+  t90:     ["TRULY REMARKABLE! YOU HAVE MY RESPECT.","THE GREAT PAPYRUS ACKNOWLEDGES YOUR SKILL!","NYEH HEH HEH... FINE. YOU ARE SKILLED."],
+  t120:    ["INCREDIBLE! YOU ARE AMAZING!","I NEVER THOUGHT A HUMAN COULD DO THIS!","EVEN UNDYNE WOULD BE IMPRESSED!"],
+  hit:     ["NYEH HEH! GOT YOU!","PAPYRUS STRIKES AGAIN!","CAREFUL THERE, HUMAN!","BONES ARE MY SPECIALTY!"],
+  lowHp:   ["YOU'RE ALMOST DEFEATED!","ALMOST THERE! ...FOR MY VICTORY!","DO NOT GIVE UP! ...WAIT. YES. DO."],
+  death:   ["NYEH HEH HEH!","DO NOT BE SAD! I AM PAPYRUS!","YOU DID YOUR BEST, HUMAN.","I'LL MAKE YOU SPAGHETTI."],
+  record:  ["SPECTACULAR! TRULY IMPRESSIVE!","NYEH... VERY IMPRESSIVE.","EVEN I AM AMAZED!"],
+  gravity: ["GRAVITY! HOW EXCITING!","NOW YOU MUST DEAL WITH THE GROUND!","NYEH HEH HEH! FALL, HUMAN!"],
+  hard:    ["OH? YOU WANT THE REAL PAPYRUS?","WITNESS MY FULL POWER!","NYEH HEH HEH! YOU ASKED FOR THIS!"],
+  orange:  ["ORANGE MEANS YOU MUST KEEP MOVING!","DODGE THROUGH THE ORANGE ONES!"],
+  blue:    ["BLUE MEANS STOP MOVING!","STAND STILL FOR THE BLUE ONES!"],
+};
+
 // ── State ─────────────────────────────────────────────────────────────────────
 let gs;
-function init(keepMode) {
+function init(keepMode, keepChar) {
     const mode = keepMode || gs?.mode || 'normal';
+    const char = keepChar || gs?.character || 'sans';
     const iframes_ms = mode === 'hard' ? 700 : 1100;
+    const Q = char === 'papyrus' ? PAP_QUOTES : QUOTES;
     gs = {
-        screen:   'menu',
+        screen:    'menu',
         mode,
+        character: char,
         iframes_ms,
-        p:        { x: BOX.x+BOX.w/2, y: BOX.y+BOX.h/2, vy:0, onGround:false, hp:HP_MAX, iframes:0, moved:false },
-        bullets:  [],
-        beams:    [],
-        spears:   [],
-        bones:    [],
-        blasters: [],
-        t0:       0,
-        elapsed:  0,
-        best:     gs?.best ?? 0,
-        bestMode: gs?.bestMode ?? {},
-        over:     false,
-        flash:    0,
-        gen:      null,
-        gDelay:   0,
-        nextAt:   1400,
-        said:     new Set(),
-        dlg:      { text:'', shown:'', charIdx:0, charTimer:0, holdMs:0 },
+        p:         { x: BOX.x+BOX.w/2, y: BOX.y+BOX.h/2, vy:0, onGround:false, hp:HP_MAX, iframes:0, moved:false },
+        bullets:   [],
+        beams:     [],
+        spears:    [],
+        bones:     [],
+        blasters:  [],
+        t0:        0,
+        elapsed:   0,
+        best:      gs?.best ?? 0,
+        bestMode:  gs?.bestMode ?? {},
+        over:      false,
+        flash:     0,
+        gen:       null,
+        gDelay:    0,
+        nextAt:    1400,
+        said:      new Set(),
+        dlg:       { text:'', shown:'', charIdx:0, charTimer:0, holdMs:0 },
+        Q,
     };
-    say(pick(mode==='gravity'?QUOTES.gravity:mode==='hard'?QUOTES.hard:QUOTES.start));
+    say(pick(mode==='gravity'?Q.gravity:mode==='hard'?Q.hard:Q.start));
 }
 init();
 
@@ -86,11 +107,13 @@ addEventListener('keydown', e => {
     K[e.code] = true;
     if(gs.screen==='menu'&&(e.code==='KeyZ'||e.code==='Enter')){gs.screen='play';gs.t0=performance.now();}
     if(gs.screen==='menu'||gs.screen==='over'){
-        if(e.code==='Digit1') init('normal');
-        if(e.code==='Digit2') init('gravity');
-        if(e.code==='Digit3') init('hard');
+        if(e.code==='Digit1') init('normal', gs.character);
+        if(e.code==='Digit2') init('gravity', gs.character);
+        if(e.code==='Digit3') init('hard', gs.character);
+        if(e.code==='KeyS') init(gs.mode, 'sans');
+        if(e.code==='KeyP') init(gs.mode, 'papyrus');
     }
-    if(gs.screen==='over'&&(e.code==='KeyZ'||e.code==='Enter')) init(gs.mode);
+    if(gs.screen==='over'&&(e.code==='KeyZ'||e.code==='Enter')) init(gs.mode, gs.character);
     if(['ArrowUp','ArrowDown','ArrowLeft','ArrowRight',' '].includes(e.key)) e.preventDefault();
 });
 addEventListener('keyup', e => { K[e.code] = false; });
@@ -145,13 +168,13 @@ function* atk_drift(d){const n=8+(d*5|0),spd=1.8+d*1.6;for(let i=0;i<n;i++){blt(
 
 // Orange = only hurts STILL players (must keep moving)
 function* atk_orange(d){
-    if(!gs.said.has('oh')){gs.said.add('oh');say(pick(QUOTES.orange));}
+    if(!gs.said.has('oh')){gs.said.add('oh');say(pick(gs.Q.orange));}
     const n=10+(d*8|0),spd=1.6+d*1.8;
     for(let i=0;i<n;i++){for(let j=0;j<2+(d*2|0);j++)blt(BOX.x+rnd(0,BOX.w),BOX.y-6,rnd(-0.5,0.5),spd,6,'#ff8800','orange');yield 130;}
 }
 // Blue = only hurts MOVING players (must stand still)
 function* atk_blue(d){
-    if(!gs.said.has('bh')){gs.said.add('bh');say(pick(QUOTES.blue));}
+    if(!gs.said.has('bh')){gs.said.add('bh');say(pick(gs.Q.blue));}
     const n=10+(d*7|0),spd=2+d*2;
     for(let i=0;i<n;i++){const L=i%2===0;blt(L?BOX.x-6:BOX.x+BOX.w+6,BOX.y+rnd(10,BOX.h-10),L?spd:-spd,0,6,'#3399ff','blue');yield 140;}
 }
@@ -179,7 +202,58 @@ function* atk_bones(d){const waves=3+(d*3|0),spd=1.2+d*1.5;for(let i=0;i<waves;i
 function* atk_blaster(d){const count=1+(d*1.5|0);for(let i=0;i<count;i++){addBlaster(Math.floor(Math.random()*4));yield 500;}yield 1600+750+300;}
 function* atk_blaster_cross(d){addBlaster(Math.floor(Math.random()*2));addBlaster(2+Math.floor(Math.random()*2));yield 1600+750+500;}
 
-const PATTERNS=[atk_rain,atk_sides,atk_aimed,atk_spiral,atk_bulletwall,atk_corners,atk_allsides,atk_drift,atk_orange,atk_blue,atk_mixed,atk_beam_h,atk_beam_v,atk_beam_cross,atk_beam_rapid,atk_spears,atk_spears_aimed,atk_bones,atk_blaster,atk_blaster_cross];
+// ── Papyrus-specific patterns ─────────────────────────────────────────────────
+// Organized marching bones — very Papyrus-style telegraphed attack
+function* atk_pap_march(d){
+    const waves=3+(d*2|0),spd=1.6+d*1.8;
+    for(let w=0;w<waves;w++){
+        const fromL=w%2===0,n=5+(d*4|0);
+        for(let i=0;i<n;i++){
+            const y=BOX.y+18+(i/Math.max(n-1,1))*(BOX.h-36);
+            blt(fromL?BOX.x-6:BOX.x+BOX.w+6,y,fromL?spd:-spd,0,6);
+            yield 75;
+        }
+        yield 350;
+    }
+}
+// Shower: 4 columns of falling bones with one gap per wave
+function* atk_pap_shower(d){
+    const waves=3+(d*2|0),spd=1.8+d*1.6;
+    for(let w=0;w<waves;w++){
+        const gap=Math.floor(Math.random()*4);
+        for(let col=0;col<4;col++){
+            if(col===gap)continue;
+            blt(BOX.x+(col+0.5)*(BOX.w/4),BOX.y-6,rnd(-0.2,0.2),spd,5);
+        }
+        yield 520;
+    }
+}
+// Pincer: bones from both sides at same height
+function* atk_pap_pincer(d){
+    const n=6+(d*5|0),spd=2+d*1.8;
+    for(let i=0;i<n;i++){
+        const y=BOX.y+rnd(14,BOX.h-14);
+        blt(BOX.x-6,y,spd,0,6);
+        blt(BOX.x+BOX.w+6,y,-spd,0,6);
+        yield 190;
+    }
+}
+// Special: bone grid with precise gap rows
+function* atk_pap_special(d){
+    const rows=3+(d*2|0),spd=1.5+d*1.2;
+    for(let r=0;r<rows;r++){
+        const gapC=Math.floor(Math.random()*5);
+        for(let c=0;c<5;c++){
+            if(c===gapC)continue;
+            blt(BOX.x+(c+0.5)*(BOX.w/5),BOX.y-6,rnd(-0.2,0.2),spd,5);
+        }
+        yield 640;
+    }
+}
+
+const SANS_PATTERNS=[atk_rain,atk_sides,atk_aimed,atk_spiral,atk_bulletwall,atk_corners,atk_allsides,atk_drift,atk_orange,atk_blue,atk_mixed,atk_beam_h,atk_beam_v,atk_beam_cross,atk_beam_rapid,atk_spears,atk_spears_aimed,atk_bones,atk_blaster,atk_blaster_cross];
+const PAP_PATTERNS=[atk_rain,atk_sides,atk_spiral,atk_corners,atk_allsides,atk_bones,atk_beam_h,atk_beam_v,atk_spears,atk_orange,atk_blue,atk_pap_march,atk_pap_shower,atk_pap_pincer,atk_pap_special];
+const PATTERNS=SANS_PATTERNS;
 
 // ── Update ────────────────────────────────────────────────────────────────────
 function update(now,dt){
@@ -209,25 +283,25 @@ function update(now,dt){
     if(gs.gen){
         gs.gDelay-=dt;
         if(gs.gDelay<=0){const{value,done}=gs.gen.next();if(done){gs.gen=null;gs.nextAt=ms+Math.max(280,1500-d*1100);}else gs.gDelay=value;}
-    } else if(ms>=gs.nextAt){gs.gen=PATTERNS[Math.random()*PATTERNS.length|0](d);gs.gDelay=0;}
+    } else if(ms>=gs.nextAt){const pool=gs.character==='papyrus'?PAP_PATTERNS:SANS_PATTERNS;gs.gen=pool[Math.random()*pool.length|0](d);gs.gDelay=0;}
 
-    const t=gs.elapsed;
-    if(t>15)  milestone('t15',QUOTES.t15);
-    if(t>30)  milestone('t30',QUOTES.t30);
-    if(t>60)  milestone('t60',QUOTES.t60);
-    if(t>90)  milestone('t90',QUOTES.t90);
-    if(t>120) milestone('t120',QUOTES.t120);
-    if(p.hp<=HP_MAX*0.25) milestone('low',QUOTES.lowHp);
+    const Q=gs.Q,t=gs.elapsed;
+    if(t>15)  milestone('t15',Q.t15);
+    if(t>30)  milestone('t30',Q.t30);
+    if(t>60)  milestone('t60',Q.t60);
+    if(t>90)  milestone('t90',Q.t90);
+    if(t>120) milestone('t120',Q.t120);
+    if(p.hp<=HP_MAX*0.25) milestone('low',Q.lowHp);
 
     function tryHit(){
         if(p.iframes>0)return false;
         p.hp--;p.iframes=gs.iframes_ms;gs.flash=300;
-        if(Math.random()<0.35&&t>3)say(pick(QUOTES.hit));
+        if(Math.random()<0.35&&t>3)say(pick(Q.hit));
         if(p.hp<=0){
             gs.over=true;gs.screen='over';
             const mod=gs.mode;
-            if(t>(gs.bestMode[mod]||0)){gs.bestMode[mod]=t;if(t>gs.best)gs.best=t;say(pick(QUOTES.record));}
-            else say(pick(QUOTES.death));
+            if(t>(gs.bestMode[mod]||0)){gs.bestMode[mod]=t;if(t>gs.best)gs.best=t;say(pick(Q.record));}
+            else say(pick(Q.death));
         }
         return true;
     }
@@ -342,6 +416,47 @@ function drawSans(x,y,ps=3){
         }
 }
 
+// Papyrus pixel art — 16×26
+// 0=trans 1=skull(#dcdcdc) 2=shadow(#aaa) 3=black(#000)
+// 4=orange(#ff7700) 5=dk-orange(#bb4400) 6=white(#f0f0f0) 7=dk-armor(#2a2a2a) 8=armor(#555)
+const PP_C=['','#dcdcdc','#aaa','#000','#ff7700','#bb4400','#f0f0f0','#2a2a2a','#555'];
+const PP=[
+[0,0,0,0,1,1,1,1,1,1,1,1,0,0,0,0],//  0 skull top
+[0,0,0,1,1,1,2,1,1,2,1,1,1,0,0,0],//  1 highlights
+[0,0,1,1,1,1,1,1,1,1,1,1,1,1,0,0],//  2
+[0,1,1,1,1,1,1,1,1,1,1,1,1,1,1,0],//  3 full skull
+[0,1,1,1,1,1,1,1,1,1,1,1,1,1,1,0],//  4
+[1,1,3,3,3,3,1,1,1,1,3,3,3,3,1,1],//  5 eye sockets (wide, square)
+[1,1,3,3,3,3,1,1,1,1,3,3,3,3,1,1],//  6
+[1,1,3,3,3,3,1,1,1,1,3,3,3,3,1,1],//  7
+[0,1,1,1,1,1,1,1,1,1,1,1,1,1,1,0],//  8 cheeks
+[0,1,3,1,3,1,3,1,3,1,3,1,3,1,1,0],//  9 teeth
+[0,0,1,1,1,1,1,1,1,1,1,1,1,1,0,0],// 10 chin
+[0,0,0,2,2,2,2,2,2,2,2,2,2,0,0,0],// 11 neck
+[0,0,4,4,4,4,4,4,4,4,4,4,4,4,0,0],// 12 scarf top
+[0,4,4,4,4,4,4,4,4,4,4,4,4,4,4,0],// 13 scarf middle
+[4,4,5,4,4,4,4,4,4,4,4,4,4,5,4,4],// 14 scarf ends
+[0,0,5,7,7,7,7,7,7,7,7,7,7,5,0,0],// 15 armor top
+[0,0,7,7,6,6,6,6,6,6,6,6,7,7,0,0],// 16 chest plate
+[0,0,7,7,6,6,6,6,6,6,6,6,7,7,0,0],// 17
+[0,0,7,7,6,6,6,6,6,6,6,6,7,7,0,0],// 18
+[0,0,8,7,7,7,6,6,6,6,7,7,7,8,0,0],// 19 lower chest
+[0,0,8,8,7,7,7,7,7,7,7,7,8,8,0,0],// 20
+[6,0,8,8,7,7,7,7,7,7,7,7,8,8,0,6],// 21 gloves
+[6,6,8,8,7,7,7,7,7,7,7,7,8,8,6,6],// 22
+[6,6,8,8,7,7,7,7,7,7,7,7,8,8,6,6],// 23
+[0,6,8,8,8,8,8,8,8,8,8,8,8,8,6,0],// 24 legs
+[0,0,8,8,8,8,8,8,8,8,8,8,8,8,0,0],// 25
+];
+function drawPapyrus(x,y,ps=3){
+    for(let r=0;r<PP.length;r++)
+        for(let c=0;c<PP[r].length;c++){
+            const v=PP[r][c]; if(!v)continue;
+            X.fillStyle=PP_C[v];
+            X.fillRect(x+c*ps, y+r*ps, ps, ps);
+        }
+}
+
 function drawBlaster(bl){
     const{x,y,side,sz,phase,timer,totalTimer,fireMs,beamLen}=bl;
     const charge=phase==='charge'?1-(timer/totalTimer):1;
@@ -419,8 +534,8 @@ function draw(now){
     const dlgY=BOX.y+BOX.h+34,dlgH=122,dlgX=14,dlgW=C.width-28;
     X.fillStyle='#000';X.fillRect(dlgX,dlgY,dlgW,dlgH);
     X.strokeStyle='#fff';X.lineWidth=3;X.strokeRect(dlgX,dlgY,dlgW,dlgH);
-    const sps=3,sH=SF.length*sps;
-    drawSans(dlgX+8, dlgY+Math.round((dlgH-sH)/2), sps);
+    if(gs.character==='papyrus'){const sps=3,sH=PP.length*sps;drawPapyrus(dlgX+8,dlgY+Math.round((dlgH-sH)/2),sps);}
+    else{const sps=3,sH=SF.length*sps;drawSans(dlgX+8,dlgY+Math.round((dlgH-sH)/2),sps);}
     if(gs.dlg.text){
         X.fillStyle='#fff';X.textAlign='left';X.font='15px "Courier New"';
         const tx=dlgX+66,ty=dlgY+28,mw=dlgW-78;
@@ -433,27 +548,39 @@ function draw(now){
     // ── Overlay screens ──
     if(gs.screen==='menu'){
         X.fillStyle='rgba(0,0,0,0.75)';X.fillRect(0,0,C.width,C.height);
-        X.textAlign='center';X.fillStyle='#fff';X.font='bold 32px "Courier New"';X.fillText('* SURVIVE *',C.width/2,C.height/2-105);
-        X.font='13px "Courier New"';X.fillStyle='#888';X.fillText('Choose a mode, then press Z to start',C.width/2,C.height/2-68);
-        const mds=[['1','NORMAL','Free movement + all attacks'],['2','GRAVITY','Falls down · ↑ to jump'],['3','HARD','More intense from the start']];
-        mds.forEach(([k,name,desc],i)=>{
-            const mx=C.width/2+(i-1)*196,my=C.height/2-28;
-            const sel=gs.mode===(['normal','gravity','hard'][i]);
-            X.fillStyle=sel?'#fff':'#555';X.font=`${sel?'bold ':''}14px "Courier New"`;X.fillText(`[${k}] ${name}`,mx,my);
-            X.fillStyle='#444';X.font='10px "Courier New"';X.fillText(desc,mx,my+17);
+        X.textAlign='center';X.fillStyle='#fff';X.font='bold 32px "Courier New"';X.fillText('* SURVIVE *',C.width/2,C.height/2-120);
+        // Character select
+        X.font='12px "Courier New"';X.fillStyle='#888';X.fillText('Choose your opponent:',C.width/2,C.height/2-88);
+        const chars=[['S','SANS','heh. you sure about this?','#aaaaff'],['P','PAPYRUS','NYEH HEH HEH!','#ffaa44']];
+        chars.forEach(([k,name,sub,col],i)=>{
+            const cx=C.width/2+(i===0?-120:120),cy=C.height/2-68;
+            const sel=gs.character===(['sans','papyrus'][i]);
+            X.fillStyle=sel?col:'#555';X.font=`bold ${sel?15:13}px "Courier New"`;X.fillText(`[${k}] ${name}`,cx,cy);
+            X.fillStyle=sel?'#888':'#333';X.font='9px "Courier New"';X.fillText(sub,cx,cy+14);
         });
-        if(Math.floor(now/600)%2===0){X.fillStyle='#fff';X.font='15px "Courier New"';X.fillText('> Press Z to start <',C.width/2,C.height/2+22);}
-        X.fillStyle='#333';X.font='10px "Courier New"';X.fillText('WASD/Arrows  ·  SHIFT to slow  ·  GRAVITY: ↑ jumps',C.width/2,C.height/2+46);
+        // Mode select
+        X.fillStyle='#888';X.font='12px "Courier New"';X.fillText('Choose a mode:',C.width/2,C.height/2-32);
+        const mds=[['1','NORMAL','Free movement'],['2','GRAVITY','↑ to jump'],['3','HARD','Intense']];
+        mds.forEach(([k,name,desc],i)=>{
+            const mx=C.width/2+(i-1)*190,my=C.height/2-12;
+            const sel=gs.mode===(['normal','gravity','hard'][i]);
+            X.fillStyle=sel?'#fff':'#555';X.font=`${sel?'bold ':''}13px "Courier New"`;X.fillText(`[${k}] ${name}`,mx,my);
+            X.fillStyle='#444';X.font='10px "Courier New"';X.fillText(desc,mx,my+15);
+        });
+        if(Math.floor(now/600)%2===0){X.fillStyle='#fff';X.font='15px "Courier New"';X.fillText('> Press Z to start <',C.width/2,C.height/2+32);}
+        X.fillStyle='#333';X.font='10px "Courier New"';X.fillText('WASD/Arrows  ·  SHIFT to slow  ·  GRAVITY: ↑ jumps',C.width/2,C.height/2+52);
     }
 
     if(gs.screen==='over'){
         X.fillStyle='rgba(0,0,0,0.82)';X.fillRect(0,0,C.width,C.height);
-        X.textAlign='center';X.fillStyle='#fff';X.font='bold 34px "Courier New"';X.fillText('* YOU DIED *',C.width/2,C.height/2-95);
-        X.font='16px "Courier New"';X.fillStyle='#aaa';X.fillText('You survived for',C.width/2,C.height/2-44);
-        X.font='bold 28px "Courier New"';X.fillStyle='#ffdd44';X.fillText(fmt(gs.elapsed),C.width/2,C.height/2-4);
-        if(gs.bestMode[gs.mode]>0){const isNew=gs.elapsed>=gs.bestMode[gs.mode]-0.001;X.fillStyle=isNew?'#44ff88':'#888';X.font='13px "Courier New"';X.fillText(`Best (${gs.mode}): ${fmt(gs.bestMode[gs.mode])}${isNew?'  ★ NEW!':''}`,C.width/2,C.height/2+30);}
-        X.fillStyle='#666';X.font='12px "Courier New"';X.fillText('Z = retry  ·  1 = NORMAL  ·  2 = GRAVITY  ·  3 = HARD',C.width/2,C.height/2+62);
-        if(Math.floor(now/600)%2===0){X.fillStyle='#fff';X.font='15px "Courier New"';X.fillText('> Press Z to try again <',C.width/2,C.height/2+90);}
+        X.textAlign='center';X.fillStyle='#fff';X.font='bold 34px "Courier New"';X.fillText('* YOU DIED *',C.width/2,C.height/2-100);
+        const opp=gs.character==='papyrus'?'PAPYRUS':'SANS';
+        X.fillStyle='#666';X.font='12px "Courier New"';X.fillText(`defeated by ${opp}`,C.width/2,C.height/2-74);
+        X.font='16px "Courier New"';X.fillStyle='#aaa';X.fillText('You survived for',C.width/2,C.height/2-48);
+        X.font='bold 28px "Courier New"';X.fillStyle='#ffdd44';X.fillText(fmt(gs.elapsed),C.width/2,C.height/2-8);
+        if(gs.bestMode[gs.mode]>0){const isNew=gs.elapsed>=gs.bestMode[gs.mode]-0.001;X.fillStyle=isNew?'#44ff88':'#888';X.font='13px "Courier New"';X.fillText(`Best (${gs.mode}): ${fmt(gs.bestMode[gs.mode])}${isNew?'  ★ NEW!':''}`,C.width/2,C.height/2+26);}
+        X.fillStyle='#666';X.font='11px "Courier New"';X.fillText('Z = retry  ·  1/2/3 = mode  ·  S = Sans  ·  P = Papyrus',C.width/2,C.height/2+56);
+        if(Math.floor(now/600)%2===0){X.fillStyle='#fff';X.font='15px "Courier New"';X.fillText('> Press Z to try again <',C.width/2,C.height/2+84);}
     }
 
     X.textAlign='center';X.fillStyle='#1e1e1e';X.font='10px "Courier New"';
