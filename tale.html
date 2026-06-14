@@ -105,15 +105,37 @@ init();
 const K = {};
 addEventListener('keydown', e => {
     K[e.code] = true;
-    if(gs.screen==='menu'&&(e.code==='KeyZ'||e.code==='Enter')){gs.screen='play';gs.t0=performance.now();}
-    if(gs.screen==='menu'||gs.screen==='over'){
+    if(gs.screen==='menu'){
+        if(e.code==='KeyZ'||e.code==='Enter'){gs.screen='play';gs.t0=performance.now();}
+        if(e.code==='KeyX'||e.code==='Escape') initOverworld();
         if(e.code==='Digit1') init('normal', gs.character);
         if(e.code==='Digit2') init('gravity', gs.character);
         if(e.code==='Digit3') init('hard', gs.character);
-        if(e.code==='KeyS') init(gs.mode, 'sans');
-        if(e.code==='KeyP') init(gs.mode, 'papyrus');
+        if(e.code==='KeyS') init(gs.mode,'sans');
+        if(e.code==='KeyP') init(gs.mode,'papyrus');
     }
-    if(gs.screen==='over'&&(e.code==='KeyZ'||e.code==='Enter')) init(gs.mode, gs.character);
+    if(gs.screen==='overworld'){
+        if(e.code==='Digit1') gs.mode='normal';
+        if(e.code==='Digit2') gs.mode='gravity';
+        if(e.code==='Digit3') gs.mode='hard';
+        if(e.code==='Escape') init(gs.mode, gs.character);
+        if(e.code==='KeyZ'||e.code==='Enter'){
+            for(const npc of OW_NPCS){
+                if(Math.hypot(ow.px-npc.x,ow.py-npc.y)<52){startBattle(npc.char);break;}
+            }
+        }
+    }
+    if(gs.screen==='over'){
+        if(e.code==='KeyZ'||e.code==='Enter'){
+            if(gs.fromOverworld)startBattle(gs.character);else init(gs.mode,gs.character);
+        }
+        if((e.code==='Escape'||e.code==='KeyX')&&gs.fromOverworld) initOverworld();
+        if(e.code==='Digit1') init('normal',gs.character);
+        if(e.code==='Digit2') init('gravity',gs.character);
+        if(e.code==='Digit3') init('hard',gs.character);
+        if(e.code==='KeyS') init(gs.mode,'sans');
+        if(e.code==='KeyP') init(gs.mode,'papyrus');
+    }
     if(['ArrowUp','ArrowDown','ArrowLeft','ArrowRight',' '].includes(e.key)) e.preventDefault();
 });
 addEventListener('keyup', e => { K[e.code] = false; });
@@ -257,6 +279,7 @@ const PATTERNS=SANS_PATTERNS;
 
 // ── Update ────────────────────────────────────────────────────────────────────
 function update(now,dt){
+    if(gs.screen==='overworld'){updateOverworld(dt);return;}
     updateDlg(dt);
     if(gs.screen!=='play')return;
     const p=gs.p,d=diff(),ms=now-gs.t0;
@@ -457,6 +480,101 @@ function drawPapyrus(x,y,ps=3){
         }
 }
 
+// ── Frisk (overworld player) pixel art — 8×12 ────────────────────────────────
+// 0=trans 1=skin(#fcddb0) 2=hair(#7c4a1e) 3=shirt-blue(#4466aa)
+// 4=shirt-pink(#ffaacc) 5=pants(#8b5e3c) 6=boots(#3a2a1a)
+const FR_C=['','#fcddb0','#7c4a1e','#4466aa','#ffaacc','#8b5e3c','#3a2a1a'];
+const FR=[
+[0,0,2,2,2,2,0,0],[0,2,2,2,2,2,2,0],[0,1,1,1,1,1,1,0],[0,0,1,1,1,1,0,0],
+[0,0,3,4,4,3,0,0],[0,0,3,4,4,3,0,0],[0,0,4,3,3,4,0,0],[0,0,3,3,3,3,0,0],
+[0,0,5,5,5,5,0,0],[0,0,5,5,5,5,0,0],[0,0,6,6,6,6,0,0],[0,0,6,6,6,6,0,0],
+];
+
+// ── Overworld ─────────────────────────────────────────────────────────────────
+const OW_NPCS=[
+    {x:350,y:230,char:'sans',label:'Sans',    greeting:"heh. you found me."},
+    {x:520,y:310,char:'papyrus',label:'Papyrus',greeting:"NYEH HEH HEH! A HUMAN IN THE UNDERGROUND!"},
+];
+let ow={px:100,py:280};
+
+function initOverworld(){
+    ow={px:100,py:280};
+    gs={screen:'overworld',mode:gs?.mode||'normal',character:gs?.character||'sans',best:gs?.best??0,bestMode:gs?.bestMode??{},Q:QUOTES};
+}
+
+function startBattle(char){
+    const mode=gs.mode||'normal',Q=char==='papyrus'?PAP_QUOTES:QUOTES,iframes_ms=mode==='hard'?700:1100;
+    gs={screen:'play',mode,character:char,iframes_ms,fromOverworld:true,
+        p:{x:BOX.x+BOX.w/2,y:BOX.y+BOX.h/2,vy:0,onGround:false,hp:HP_MAX,iframes:0,moved:false},
+        bullets:[],beams:[],spears:[],bones:[],blasters:[],
+        t0:performance.now(),elapsed:0,best:gs.best??0,bestMode:gs.bestMode??{},
+        over:false,flash:0,gen:null,gDelay:0,nextAt:1400,said:new Set(),
+        dlg:{text:'',shown:'',charIdx:0,charTimer:0,holdMs:0},Q};
+    say(pick(mode==='gravity'?Q.gravity:mode==='hard'?Q.hard:Q.start));
+}
+
+function updateOverworld(dt){
+    const spd=2.5;
+    if(K['ArrowLeft']||K['KeyA'])  ow.px=Math.max(52, ow.px-spd);
+    if(K['ArrowRight']||K['KeyD']) ow.px=Math.min(588,ow.px+spd);
+    if(K['ArrowUp']||K['KeyW'])    ow.py=Math.max(110,ow.py-spd);
+    if(K['ArrowDown']||K['KeyS'])  ow.py=Math.min(428,ow.py+spd);
+}
+
+function drawOverworld(now){
+    X.fillStyle='#111';X.fillRect(0,0,C.width,C.height);
+    // Floor tiles
+    for(let ty=70;ty<430;ty+=32)for(let tx=40;tx<600;tx+=32){
+        X.fillStyle=(((tx>>5)+(ty>>5))%2===0)?'#1d1d1d':'#222';X.fillRect(tx,ty,32,32);
+    }
+    // Grid lines
+    X.strokeStyle='#181818';X.lineWidth=1;
+    for(let ty=70;ty<=430;ty+=32){X.beginPath();X.moveTo(40,ty);X.lineTo(600,ty);X.stroke();}
+    for(let tx=40;tx<=600;tx+=32){X.beginPath();X.moveTo(tx,70);X.lineTo(tx,430);X.stroke();}
+    // Walls
+    X.fillStyle='#0a0a0a';X.fillRect(0,0,C.width,70);X.fillRect(0,430,C.width,70);
+    X.fillRect(0,0,40,C.height);X.fillRect(600,0,40,C.height);
+    // Brick texture
+    X.fillStyle='#161616';
+    for(let bx=-8;bx<C.width;bx+=40){
+        X.fillRect(bx,6,36,22);X.fillRect(bx+20,34,36,16);
+        X.fillRect(bx,440,36,22);X.fillRect(bx+20,464,36,16);
+    }
+    X.strokeStyle='#2a2a2a';X.lineWidth=2;X.strokeRect(40,70,560,360);
+
+    // NPCs
+    for(const npc of OW_NPCS){
+        const near=Math.hypot(ow.px-npc.x,ow.py-npc.y)<52;
+        if(near){X.save();X.globalAlpha=0.12+Math.abs(Math.sin(now/500))*0.08;
+            X.fillStyle=npc.char==='papyrus'?'#ff7700':'#8888ff';
+            X.beginPath();X.arc(npc.x,npc.y-28,40,0,Math.PI*2);X.fill();X.restore();}
+        // Shadow
+        X.fillStyle='rgba(0,0,0,0.45)';X.beginPath();X.ellipse(npc.x,npc.y,14,5,0,0,Math.PI*2);X.fill();
+        if(npc.char==='papyrus')drawPapyrus(npc.x-16,npc.y-52,2);
+        else drawSans(npc.x-16,npc.y-56,2);
+        // Label
+        X.textAlign='center';X.fillStyle=near?'#fff':'#666';X.font=`${near?'bold ':''}11px "Courier New"`;
+        X.fillText(npc.label,npc.x,npc.y+14);
+        if(near){const blink=Math.floor(now/500)%2===0;X.fillStyle=blink?'#fff':'#bbb';X.font='11px "Courier New"';X.fillText('[ Z ] Fight',npc.x,npc.y+28);}
+    }
+    // Frisk shadow
+    X.fillStyle='rgba(0,0,0,0.4)';X.beginPath();X.ellipse(ow.px,ow.py,12,4,0,0,Math.PI*2);X.fill();
+    // Frisk sprite (feet at ow.py)
+    const fps=3,fw=FR[0].length*fps,fh=FR.length*fps;
+    for(let r=0;r<FR.length;r++)for(let c=0;c<FR[r].length;c++){
+        const v=FR[r][c];if(!v)continue;
+        X.fillStyle=FR_C[v];X.fillRect(ow.px-fw/2+c*fps,ow.py-fh+r*fps,fps,fps);
+    }
+    // HUD
+    X.textAlign='center';X.fillStyle='#fff';X.font='bold 15px "Courier New"';X.fillText('* THE UNDERGROUND *',C.width/2,22);
+    const mLabel={normal:'NORMAL',gravity:'GRAVITY',hard:'HARD'}[gs.mode];
+    X.textAlign='right';X.fillStyle='#444';X.font='10px "Courier New"';X.fillText(`mode: ${mLabel}  [1/2/3]`,C.width-8,20);
+    X.textAlign='left';X.fillStyle='#444';X.font='10px "Courier New"';
+    if(gs.bestMode&&Object.keys(gs.bestMode).length>0){let yy=20;for(const[m,t]of Object.entries(gs.bestMode)){X.fillText(`${m} best: ${fmt(t)}`,8,yy);yy+=13;}}
+    X.textAlign='center';X.fillStyle='#2a2a2a';X.font='10px "Courier New"';
+    X.fillText('WASD to move  ·  Z to fight  ·  Esc to menu',C.width/2,C.height-6);
+}
+
 function drawBlaster(bl){
     const{x,y,side,sz,phase,timer,totalTimer,fireMs,beamLen}=bl;
     const charge=phase==='charge'?1-(timer/totalTimer):1;
@@ -476,6 +594,7 @@ function drawBlaster(bl){
 function fmt(s){const m=Math.floor(s/60);return`${m}:${(s%60).toFixed(2).padStart(5,'0')}`;}
 
 function draw(now){
+    if(gs.screen==='overworld'){drawOverworld(now);return;}
     const p=gs.p,slow=K['ShiftLeft']||K['ShiftRight'],d=diff();
     X.fillStyle='#000';X.fillRect(0,0,C.width,C.height);
 
@@ -567,8 +686,9 @@ function draw(now){
             X.fillStyle=sel?'#fff':'#555';X.font=`${sel?'bold ':''}13px "Courier New"`;X.fillText(`[${k}] ${name}`,mx,my);
             X.fillStyle='#444';X.font='10px "Courier New"';X.fillText(desc,mx,my+15);
         });
-        if(Math.floor(now/600)%2===0){X.fillStyle='#fff';X.font='15px "Courier New"';X.fillText('> Press Z to start <',C.width/2,C.height/2+32);}
-        X.fillStyle='#333';X.font='10px "Courier New"';X.fillText('WASD/Arrows  ·  SHIFT to slow  ·  GRAVITY: ↑ jumps',C.width/2,C.height/2+52);
+        if(Math.floor(now/600)%2===0){X.fillStyle='#fff';X.font='15px "Courier New"';X.fillText('> Press Z to fight <',C.width/2,C.height/2+32);}
+        X.fillStyle='#446644';X.font='13px "Courier New"';X.fillText('[ X ] Explore the Underground',C.width/2,C.height/2+52);
+        X.fillStyle='#333';X.font='10px "Courier New"';X.fillText('WASD/Arrows  ·  SHIFT to slow  ·  GRAVITY: ↑ jumps',C.width/2,C.height/2+68);
     }
 
     if(gs.screen==='over'){
@@ -580,7 +700,8 @@ function draw(now){
         X.font='bold 28px "Courier New"';X.fillStyle='#ffdd44';X.fillText(fmt(gs.elapsed),C.width/2,C.height/2-8);
         if(gs.bestMode[gs.mode]>0){const isNew=gs.elapsed>=gs.bestMode[gs.mode]-0.001;X.fillStyle=isNew?'#44ff88':'#888';X.font='13px "Courier New"';X.fillText(`Best (${gs.mode}): ${fmt(gs.bestMode[gs.mode])}${isNew?'  ★ NEW!':''}`,C.width/2,C.height/2+26);}
         X.fillStyle='#666';X.font='11px "Courier New"';X.fillText('Z = retry  ·  1/2/3 = mode  ·  S = Sans  ·  P = Papyrus',C.width/2,C.height/2+56);
-        if(Math.floor(now/600)%2===0){X.fillStyle='#fff';X.font='15px "Courier New"';X.fillText('> Press Z to try again <',C.width/2,C.height/2+84);}
+        if(gs.fromOverworld){X.fillStyle='#446644';X.font='12px "Courier New"';X.fillText('Esc = return to the Underground',C.width/2,C.height/2+72);}
+        if(Math.floor(now/600)%2===0){X.fillStyle='#fff';X.font='15px "Courier New"';X.fillText('> Press Z to try again <',C.width/2,C.height/2+90);}
     }
 
     X.textAlign='center';X.fillStyle='#1e1e1e';X.font='10px "Courier New"';
