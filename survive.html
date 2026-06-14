@@ -1,0 +1,431 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>* SURVIVE *</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+    background: #000;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    min-height: 100vh;
+    overflow: hidden;
+    font-family: 'Courier New', Courier, monospace;
+}
+canvas { display: block; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+'use strict';
+
+const C = document.getElementById('c');
+const X = C.getContext('2d');
+C.width  = 640;
+C.height = 500;
+
+// ── Battle box (centered) ─────────────────────────────────────────────────────
+const BOX = { x: 220, y: 130, w: 200, h: 190 };
+const HEART_R   = 5;     // hitbox radius (small, like Undertale)
+const HP_MAX    = 20;
+const IFRAME_MS = 1100;  // invincibility window after hit (ms)
+
+// ── State ─────────────────────────────────────────────────────────────────────
+let gs;
+function init() {
+    gs = {
+        p:       { x: BOX.x + BOX.w / 2, y: BOX.y + BOX.h / 2,
+                   hp: HP_MAX, iframes: 0 },
+        bullets: [],
+        t0:      performance.now(),
+        elapsed: 0,
+        best:    gs?.best ?? 0,
+        over:    false,
+        flash:   0,   // red flash intensity when hit
+        gen:     null,
+        gDelay:  0,
+        nextAt:  1200, // ms from start before first attack
+    };
+}
+
+// ── Input ─────────────────────────────────────────────────────────────────────
+const K = {};
+addEventListener('keydown', e => {
+    K[e.code] = true;
+    if (gs.over && ['KeyZ','Enter','Space'].includes(e.code)) init();
+    // Prevent arrow keys from scrolling page
+    if (['ArrowUp','ArrowDown','ArrowLeft','ArrowRight',' '].includes(e.key))
+        e.preventDefault();
+});
+addEventListener('keyup', e => { K[e.code] = false; });
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+const rnd  = (a, b) => a + Math.random() * (b - a);
+const diff = ()     => Math.min(gs.elapsed / 90, 1); // 0→1 over 90 s
+
+function blt(x, y, vx, vy, r = 5, col = '#fff') {
+    gs.bullets.push({ x, y, vx, vy, r, col });
+}
+
+function aimAt(ox, oy, spd) {
+    const dx = gs.p.x - ox, dy = gs.p.y - oy;
+    const l = Math.hypot(dx, dy) || 1;
+    return [dx / l * spd, dy / l * spd];
+}
+
+// Returns a spawn point just off the given side (0=top 1=right 2=bottom 3=left)
+function edge(side) {
+    const s = (side | 0) % 4;
+    if (s === 0) return [BOX.x + rnd(0, BOX.w),     BOX.y - 8           ];
+    if (s === 1) return [BOX.x + BOX.w + 8,          BOX.y + rnd(0, BOX.h)];
+    if (s === 2) return [BOX.x + rnd(0, BOX.w),     BOX.y + BOX.h + 8  ];
+                 return [BOX.x - 8,                  BOX.y + rnd(0, BOX.h)];
+}
+
+// ── Attack patterns (generator functions) ─────────────────────────────────────
+// Each generator `yield`s the ms to wait before its next step.
+
+function* atk_rain(d) {
+    const rows = 8 + (d * 6 | 0), spd = 1.8 + d * 2.2;
+    for (let i = 0; i < rows; i++) {
+        const gap = rnd(0, 5) | 0;
+        for (let c = 0; c < 6; c++) {
+            if (c === gap) continue;
+            const ox = (i % 2) * 16; // stagger alternate rows
+            blt(BOX.x + (BOX.w / 6) * c + BOX.w / 12 + ox, BOX.y - 6, 0, spd);
+        }
+        yield 95;
+    }
+}
+
+function* atk_sides(d) {
+    const n = 10 + (d * 8 | 0), spd = 2 + d * 2;
+    for (let i = 0; i < n; i++) {
+        const L = i % 2 === 0;
+        blt(L ? BOX.x - 6 : BOX.x + BOX.w + 6,
+            BOX.y + rnd(10, BOX.h - 10),
+            L ? spd : -spd, 0);
+        yield 130;
+    }
+}
+
+function* atk_aimed(d) {
+    const n = 5 + (d * 5 | 0), spd = 2 + d * 2.5, burst = 1 + (d * 2 | 0);
+    for (let i = 0; i < n; i++) {
+        const [ox, oy] = edge(Math.random() * 4);
+        const [vx, vy] = aimAt(ox, oy, spd);
+        const base = Math.atan2(vy, vx);
+        for (let b = 0; b < burst; b++) {
+            const a = base + (b - (burst - 1) / 2) * (Math.PI / 18);
+            blt(ox, oy, Math.cos(a) * spd, Math.sin(a) * spd, 5);
+        }
+        yield 370;
+    }
+}
+
+function* atk_spiral(d) {
+    const n = 18 + (d * 14 | 0), spd = 2 + d * 1.5;
+    const cx = BOX.x + BOX.w / 2;
+    for (let i = 0; i < n; i++) {
+        const a = (i / n) * Math.PI * 4; // two full sweeps
+        blt(cx, BOX.y - 6,
+            Math.cos(a) * spd,
+            Math.abs(Math.sin(a)) * spd + 0.4);
+        yield 55;
+    }
+}
+
+function* atk_wall(d) {
+    const slots = 7, spd = 1.6 + d * 1.8;
+    for (let w = 0; w < 3; w++) {
+        const gap = rnd(0, slots - 1) | 0; // two-slot gap
+        for (let s = 0; s < slots; s++) {
+            if (s === gap || s === gap + 1) continue;
+            blt(BOX.x + (BOX.w / slots) * s + BOX.w / slots / 2, BOX.y - 6, 0, spd);
+        }
+        yield 680;
+    }
+}
+
+function* atk_corners(d) {
+    const n = 3 + (d * 3 | 0), spd = 2 + d * 2;
+    const pts = [
+        [BOX.x,          BOX.y         ],
+        [BOX.x + BOX.w,  BOX.y         ],
+        [BOX.x,          BOX.y + BOX.h ],
+        [BOX.x + BOX.w,  BOX.y + BOX.h ],
+    ];
+    for (let i = 0; i < n; i++) {
+        for (const [cx, cy] of pts) {
+            const [vx, vy] = aimAt(cx, cy, spd);
+            blt(cx, cy, vx, vy, 6);
+        }
+        yield 320;
+    }
+}
+
+function* atk_allsides(d) {
+    const n = 4 + (d * 4 | 0), spd = 2 + d * 1.8;
+    for (let i = 0; i < n; i++) {
+        const y = BOX.y + rnd(10, BOX.h - 10);
+        const x = BOX.x + rnd(10, BOX.w - 10);
+        blt(BOX.x - 6,         y,  spd, 0);
+        blt(BOX.x + BOX.w + 6, y, -spd, 0);
+        blt(x, BOX.y - 6,         0,  spd);
+        blt(x, BOX.y + BOX.h + 6, 0, -spd);
+        yield 220;
+    }
+}
+
+function* atk_drift(d) {
+    const n = 8 + (d * 5 | 0), spd = 1.8 + d * 1.6;
+    for (let i = 0; i < n; i++) {
+        blt(BOX.x + rnd(0, BOX.w), BOX.y - 6,
+            rnd(-1, 1) * (0.6 + d * 0.8), spd);
+        yield 110;
+    }
+}
+
+const PATTERNS = [atk_rain, atk_sides, atk_aimed, atk_spiral,
+                  atk_wall, atk_corners, atk_allsides, atk_drift];
+
+// ── Update ────────────────────────────────────────────────────────────────────
+function update(now, dt) {
+    if (gs.over) return;
+    const p  = gs.p;
+    const d  = diff();
+    const ms = now - gs.t0;
+
+    gs.elapsed = ms / 1000;
+    if (gs.flash > 0) gs.flash -= dt;
+
+    // Player movement
+    const slow = K['ShiftLeft'] || K['ShiftRight'];
+    const spd  = slow ? 1.5 : 3.5;
+    if (K['ArrowLeft']  || K['KeyA']) p.x = Math.max(BOX.x + HEART_R,          p.x - spd);
+    if (K['ArrowRight'] || K['KeyD']) p.x = Math.min(BOX.x + BOX.w - HEART_R,  p.x + spd);
+    if (K['ArrowUp']    || K['KeyW']) p.y = Math.max(BOX.y + HEART_R,          p.y - spd);
+    if (K['ArrowDown']  || K['KeyS']) p.y = Math.min(BOX.y + BOX.h - HEART_R,  p.y + spd);
+
+    // Pattern scheduling
+    if (gs.gen) {
+        gs.gDelay -= dt;
+        if (gs.gDelay <= 0) {
+            const { value, done } = gs.gen.next();
+            if (done) {
+                gs.gen   = null;
+                gs.nextAt = ms + Math.max(280, 1500 - d * 1100);
+            } else {
+                gs.gDelay = value;
+            }
+        }
+    } else if (ms >= gs.nextAt) {
+        gs.gen    = PATTERNS[Math.random() * PATTERNS.length | 0](d);
+        gs.gDelay = 0;
+    }
+
+    // Move & cull bullets
+    gs.bullets = gs.bullets.filter(b => {
+        b.x += b.vx;
+        b.y += b.vy;
+        return b.x > BOX.x - 50 && b.x < BOX.x + BOX.w + 50 &&
+               b.y > BOX.y - 50 && b.y < BOX.y + BOX.h + 50;
+    });
+
+    // Collision detection
+    if (p.iframes > 0) {
+        p.iframes -= dt;
+    } else {
+        for (const b of gs.bullets) {
+            if (Math.hypot(b.x - p.x, b.y - p.y) < b.r + HEART_R - 1) {
+                p.hp--;
+                p.iframes = IFRAME_MS;
+                gs.flash  = 300;
+                if (p.hp <= 0) {
+                    gs.over = true;
+                    if (gs.elapsed > gs.best) gs.best = gs.elapsed;
+                }
+                break;
+            }
+        }
+    }
+}
+
+// ── Draw ──────────────────────────────────────────────────────────────────────
+
+// Pixel-art heart (7 × 6 grid)
+const HEART_PIX = [
+    [0,1,1,0,1,1,0],
+    [1,1,1,1,1,1,1],
+    [1,1,1,1,1,1,1],
+    [0,1,1,1,1,1,0],
+    [0,0,1,1,1,0,0],
+    [0,0,0,1,0,0,0],
+];
+function drawHeart(x, y, ps = 2.2) {
+    const W = 7 * ps, H = 6 * ps;
+    X.fillStyle = '#ff0000';
+    for (let r = 0; r < HEART_PIX.length; r++)
+        for (let c = 0; c < 7; c++)
+            if (HEART_PIX[r][c])
+                X.fillRect(x - W / 2 + c * ps, y - H / 2 + r * ps, ps, ps);
+}
+
+function fmt(secs) {
+    const m = Math.floor(secs / 60);
+    const s = (secs % 60).toFixed(2).padStart(5, '0');
+    return `${m}:${s}`;
+}
+
+function draw(now) {
+    const p    = gs.p;
+    const slow = K['ShiftLeft'] || K['ShiftRight'];
+
+    // ── Background ──
+    X.fillStyle = '#000';
+    X.fillRect(0, 0, C.width, C.height);
+
+    // ── Title ──
+    X.textAlign = 'center';
+    X.fillStyle = '#fff';
+    X.font = 'bold 26px "Courier New"';
+    X.fillText('* SURVIVE *', C.width / 2, 40);
+
+    X.font = '11px "Courier New"';
+    X.fillStyle = '#555';
+    X.fillText('WASD / Arrows to move  ·  hold SHIFT to focus (slow)', C.width / 2, 57);
+
+    // ── Timer ──
+    X.textAlign = 'left';
+    X.fillStyle = '#fff';
+    X.font = 'bold 19px "Courier New"';
+    X.fillText(`TIME  ${fmt(gs.elapsed)}`, 18, 96);
+
+    if (gs.best > 0) {
+        X.fillStyle = '#888';
+        X.font = '13px "Courier New"';
+        X.fillText(`BEST  ${fmt(gs.best)}`, 18, 114);
+    }
+
+    // ── Threat level ──
+    const lvl = Math.min(10, (diff() * 10 | 0) + 1);
+    X.textAlign = 'right';
+    X.fillStyle = lvl >= 8 ? '#ff6644' : lvl >= 5 ? '#ffaa22' : '#888';
+    X.font = '13px "Courier New"';
+    X.fillText(`THREAT LV ${lvl}`, C.width - 18, 96);
+    X.fillStyle = '#444';
+    X.font = '11px "Courier New"';
+    X.fillText(`${gs.bullets.length} bullets active`, C.width - 18, 114);
+
+    // ── Battle box (flash red when hit) ──
+    if (gs.flash > 0) {
+        const alpha = Math.min(0.25, gs.flash / 300 * 0.25);
+        X.fillStyle = `rgba(255,0,0,${alpha})`;
+        X.fillRect(BOX.x, BOX.y, BOX.w, BOX.h);
+    }
+    const boxAlpha = gs.flash > 0 ? Math.min(1, gs.flash / 80) : 0;
+    X.strokeStyle = boxAlpha > 0
+        ? `rgba(255,${Math.round(255*(1-boxAlpha))},${Math.round(255*(1-boxAlpha))},1)`
+        : '#fff';
+    X.lineWidth = 3;
+    X.strokeRect(BOX.x, BOX.y, BOX.w, BOX.h);
+
+    // ── Bullets ──
+    for (const b of gs.bullets) {
+        X.fillStyle = b.col;
+        X.beginPath();
+        X.arc(b.x, b.y, b.r, 0, Math.PI * 2);
+        X.fill();
+    }
+
+    // ── Heart (blink during iframes) ──
+    if (!gs.over) {
+        const blink = p.iframes > 0 && (Math.floor(p.iframes / 80) % 2 === 0);
+        if (!blink) drawHeart(p.x, p.y);
+
+        // Show hitbox circle while focused (SHIFT held)
+        if (slow) {
+            X.strokeStyle = 'rgba(255,180,180,0.8)';
+            X.lineWidth = 1;
+            X.beginPath();
+            X.arc(p.x, p.y, HEART_R, 0, Math.PI * 2);
+            X.stroke();
+        }
+    }
+
+    // ── HP bar ──
+    const bw = 184, bh = 17;
+    const bx = (C.width - bw) / 2, by = BOX.y + BOX.h + 18;
+    X.fillStyle = '#0d0000';
+    X.fillRect(bx, by, bw, bh);
+    const frac = Math.max(0, p.hp / HP_MAX);
+    X.fillStyle = frac > 0.5 ? '#00bb00' : frac > 0.25 ? '#bb7700' : '#bb0000';
+    X.fillRect(bx, by, bw * frac, bh);
+    X.strokeStyle = '#fff';
+    X.lineWidth = 2;
+    X.strokeRect(bx, by, bw, bh);
+    X.fillStyle = '#fff';
+    X.textAlign = 'center';
+    X.font = '12px "Courier New"';
+    X.fillText(`HP  ${Math.max(0, p.hp)} / ${HP_MAX}`, C.width / 2, by + 12);
+
+    // Controls reminder (bottom)
+    X.fillStyle = '#333';
+    X.font = '11px "Courier New"';
+    X.fillText('Z / Enter / Space  —  restart after game over', C.width / 2, C.height - 10);
+
+    // ── Game Over overlay ──
+    if (gs.over) {
+        X.fillStyle = 'rgba(0,0,0,0.84)';
+        X.fillRect(0, 0, C.width, C.height);
+
+        X.textAlign = 'center';
+        X.fillStyle = '#fff';
+        X.font = 'bold 36px "Courier New"';
+        X.fillText('* YOU DIED *', C.width / 2, C.height / 2 - 86);
+
+        X.font = '17px "Courier New"';
+        X.fillStyle = '#aaa';
+        X.fillText('You survived for', C.width / 2, C.height / 2 - 28);
+
+        X.font = 'bold 30px "Courier New"';
+        X.fillStyle = '#ffdd44';
+        X.fillText(fmt(gs.elapsed), C.width / 2, C.height / 2 + 12);
+
+        if (gs.best > 0) {
+            const isNew = gs.elapsed >= gs.best - 0.001;
+            X.fillStyle = isNew ? '#44ff88' : '#888';
+            X.font = '14px "Courier New"';
+            X.fillText(
+                `Personal Best: ${fmt(gs.best)}${isNew ? '  ★ NEW RECORD!' : ''}`,
+                C.width / 2, C.height / 2 + 50
+            );
+        }
+
+        // Blinking prompt
+        if (Math.floor(now / 600) % 2 === 0) {
+            X.fillStyle = '#fff';
+            X.font = '17px "Courier New"';
+            X.fillText('Press Z to try again', C.width / 2, C.height / 2 + 92);
+        }
+    }
+}
+
+// ── Game loop ─────────────────────────────────────────────────────────────────
+let last = 0;
+function loop(now) {
+    const dt = last ? Math.min(now - last, 50) : 16;
+    last = now;
+    update(now, dt);
+    draw(now);
+    requestAnimationFrame(loop);
+}
+
+init();
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
