@@ -27,27 +27,28 @@ const X = C.getContext('2d');
 C.width  = 640;
 C.height = 500;
 
-// ── Battle box (centered) ─────────────────────────────────────────────────────
 const BOX = { x: 220, y: 130, w: 200, h: 190 };
-const HEART_R   = 5;     // hitbox radius (small, like Undertale)
+const HEART_R   = 5;
 const HP_MAX    = 20;
-const IFRAME_MS = 1100;  // invincibility window after hit (ms)
+const IFRAME_MS = 1100;
 
 // ── State ─────────────────────────────────────────────────────────────────────
 let gs;
 function init() {
     gs = {
-        p:       { x: BOX.x + BOX.w / 2, y: BOX.y + BOX.h / 2,
-                   hp: HP_MAX, iframes: 0 },
+        p:      { x: BOX.x + BOX.w / 2, y: BOX.y + BOX.h / 2, hp: HP_MAX, iframes: 0 },
         bullets: [],
+        beams:   [],  // box-spanning laser beams (warning → active)
+        spears:  [],  // Undyne-style directed spears (warning triangle → launch)
+        bones:   [],  // Papyrus-style horizontal walls with a gap
         t0:      performance.now(),
         elapsed: 0,
         best:    gs?.best ?? 0,
         over:    false,
-        flash:   0,   // red flash intensity when hit
+        flash:   0,
         gen:     null,
         gDelay:  0,
-        nextAt:  1200, // ms from start before first attack
+        nextAt:  1200,
     };
 }
 
@@ -56,7 +57,6 @@ const K = {};
 addEventListener('keydown', e => {
     K[e.code] = true;
     if (gs.over && ['KeyZ','Enter','Space'].includes(e.code)) init();
-    // Prevent arrow keys from scrolling page
     if (['ArrowUp','ArrowDown','ArrowLeft','ArrowRight',' '].includes(e.key))
         e.preventDefault();
 });
@@ -64,11 +64,7 @@ addEventListener('keyup', e => { K[e.code] = false; });
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 const rnd  = (a, b) => a + Math.random() * (b - a);
-const diff = ()     => Math.min(gs.elapsed / 90, 1); // 0→1 over 90 s
-
-function blt(x, y, vx, vy, r = 5, col = '#fff') {
-    gs.bullets.push({ x, y, vx, vy, r, col });
-}
+const diff = ()     => Math.min(gs.elapsed / 90, 1);
 
 function aimAt(ox, oy, spd) {
     const dx = gs.p.x - ox, dy = gs.p.y - oy;
@@ -76,26 +72,65 @@ function aimAt(ox, oy, spd) {
     return [dx / l * spd, dy / l * spd];
 }
 
-// Returns a spawn point just off the given side (0=top 1=right 2=bottom 3=left)
-function edge(side) {
+function edgePt(side) {
     const s = (side | 0) % 4;
-    if (s === 0) return [BOX.x + rnd(0, BOX.w),     BOX.y - 8           ];
-    if (s === 1) return [BOX.x + BOX.w + 8,          BOX.y + rnd(0, BOX.h)];
-    if (s === 2) return [BOX.x + rnd(0, BOX.w),     BOX.y + BOX.h + 8  ];
-                 return [BOX.x - 8,                  BOX.y + rnd(0, BOX.h)];
+    if (s === 0) return [BOX.x + rnd(0, BOX.w), BOX.y - 8];
+    if (s === 1) return [BOX.x + BOX.w + 8,     BOX.y + rnd(0, BOX.h)];
+    if (s === 2) return [BOX.x + rnd(0, BOX.w), BOX.y + BOX.h + 8];
+                 return [BOX.x - 8,              BOX.y + rnd(0, BOX.h)];
 }
 
-// ── Attack patterns (generator functions) ─────────────────────────────────────
-// Each generator `yield`s the ms to wait before its next step.
+// Closest-point segment→circle distance check (for spear hitbox)
+function segHitsCircle(x1, y1, x2, y2, cx, cy, r) {
+    const ddx = x2 - x1, ddy = y2 - y1;
+    const len2 = ddx * ddx + ddy * ddy;
+    const t = len2 ? Math.max(0, Math.min(1, ((cx - x1) * ddx + (cy - y1) * ddy) / len2)) : 0;
+    return Math.hypot(x1 + t * ddx - cx, y1 + t * ddy - cy) < r;
+}
 
+// ── Entity spawners ───────────────────────────────────────────────────────────
+function blt(x, y, vx, vy, r = 5, col = '#fff') {
+    gs.bullets.push({ x, y, vx, vy, r, col, alive: true });
+}
+
+// axis 'h'=horizontal beam / 'v'=vertical beam
+// pos = absolute y (h) or absolute x (v) where the beam runs
+function addBeam(axis, pos, warnMs = 950, activeMs = 550, thick = 20) {
+    gs.beams.push({ axis, pos, thick, warnMs, totalWarn: warnMs, activeMs });
+}
+
+// side: 0=top 1=right 2=bottom 3=left
+function addSpear(side, pos, warnMs = 600, spd = 9) {
+    const s = side % 4;
+    let fromX, fromY, dx, dy, warnX, warnY;
+    if (s === 0) { fromX = warnX = pos; fromY = BOX.y - 8;         warnY = BOX.y;          dx =  0; dy =  1; }
+    if (s === 1) { fromX = BOX.x + BOX.w + 8; warnX = BOX.x + BOX.w; fromY = warnY = pos; dx = -1; dy =  0; }
+    if (s === 2) { fromX = warnX = pos; fromY = BOX.y + BOX.h + 8; warnY = BOX.y + BOX.h; dx =  0; dy = -1; }
+    if (s === 3) { fromX = BOX.x - 8; warnX = BOX.x; fromY = warnY = pos;                 dx =  1; dy =  0; }
+    gs.spears.push({
+        fromX, fromY, warnX, warnY,
+        tipX: fromX, tipY: fromY,
+        dx, dy, spd, len: 30,
+        warnMs, totalWarn: warnMs,
+        launched: false, alive: true,
+    });
+}
+
+// Horizontal bone wall moving through the box vertically
+// gapX/gapW are absolute coordinates of the safe gap
+function addBone(vy, gapX, gapW) {
+    const startY = vy > 0 ? BOX.y - 14 : BOX.y + BOX.h + 2;
+    gs.bones.push({ pos: startY, vy, gapX, gapW, thick: 10, alive: true });
+}
+
+// ── Bullet patterns ───────────────────────────────────────────────────────────
 function* atk_rain(d) {
     const rows = 8 + (d * 6 | 0), spd = 1.8 + d * 2.2;
     for (let i = 0; i < rows; i++) {
         const gap = rnd(0, 5) | 0;
         for (let c = 0; c < 6; c++) {
             if (c === gap) continue;
-            const ox = (i % 2) * 16; // stagger alternate rows
-            blt(BOX.x + (BOX.w / 6) * c + BOX.w / 12 + ox, BOX.y - 6, 0, spd);
+            blt(BOX.x + (BOX.w / 6) * c + BOX.w / 12 + (i % 2) * 16, BOX.y - 6, 0, spd);
         }
         yield 95;
     }
@@ -105,9 +140,7 @@ function* atk_sides(d) {
     const n = 10 + (d * 8 | 0), spd = 2 + d * 2;
     for (let i = 0; i < n; i++) {
         const L = i % 2 === 0;
-        blt(L ? BOX.x - 6 : BOX.x + BOX.w + 6,
-            BOX.y + rnd(10, BOX.h - 10),
-            L ? spd : -spd, 0);
+        blt(L ? BOX.x - 6 : BOX.x + BOX.w + 6, BOX.y + rnd(10, BOX.h - 10), L ? spd : -spd, 0);
         yield 130;
     }
 }
@@ -115,7 +148,7 @@ function* atk_sides(d) {
 function* atk_aimed(d) {
     const n = 5 + (d * 5 | 0), spd = 2 + d * 2.5, burst = 1 + (d * 2 | 0);
     for (let i = 0; i < n; i++) {
-        const [ox, oy] = edge(Math.random() * 4);
+        const [ox, oy] = edgePt(Math.random() * 4);
         const [vx, vy] = aimAt(ox, oy, spd);
         const base = Math.atan2(vy, vx);
         for (let b = 0; b < burst; b++) {
@@ -130,18 +163,16 @@ function* atk_spiral(d) {
     const n = 18 + (d * 14 | 0), spd = 2 + d * 1.5;
     const cx = BOX.x + BOX.w / 2;
     for (let i = 0; i < n; i++) {
-        const a = (i / n) * Math.PI * 4; // two full sweeps
-        blt(cx, BOX.y - 6,
-            Math.cos(a) * spd,
-            Math.abs(Math.sin(a)) * spd + 0.4);
+        const a = (i / n) * Math.PI * 4;
+        blt(cx, BOX.y - 6, Math.cos(a) * spd, Math.abs(Math.sin(a)) * spd + 0.4);
         yield 55;
     }
 }
 
-function* atk_wall(d) {
+function* atk_bulletwall(d) {
     const slots = 7, spd = 1.6 + d * 1.8;
     for (let w = 0; w < 3; w++) {
-        const gap = rnd(0, slots - 1) | 0; // two-slot gap
+        const gap = rnd(0, slots - 1) | 0;
         for (let s = 0; s < slots; s++) {
             if (s === gap || s === gap + 1) continue;
             blt(BOX.x + (BOX.w / slots) * s + BOX.w / slots / 2, BOX.y - 6, 0, spd);
@@ -152,12 +183,7 @@ function* atk_wall(d) {
 
 function* atk_corners(d) {
     const n = 3 + (d * 3 | 0), spd = 2 + d * 2;
-    const pts = [
-        [BOX.x,          BOX.y         ],
-        [BOX.x + BOX.w,  BOX.y         ],
-        [BOX.x,          BOX.y + BOX.h ],
-        [BOX.x + BOX.w,  BOX.y + BOX.h ],
-    ];
+    const pts = [[BOX.x,BOX.y],[BOX.x+BOX.w,BOX.y],[BOX.x,BOX.y+BOX.h],[BOX.x+BOX.w,BOX.y+BOX.h]];
     for (let i = 0; i < n; i++) {
         for (const [cx, cy] of pts) {
             const [vx, vy] = aimAt(cx, cy, spd);
@@ -170,11 +196,10 @@ function* atk_corners(d) {
 function* atk_allsides(d) {
     const n = 4 + (d * 4 | 0), spd = 2 + d * 1.8;
     for (let i = 0; i < n; i++) {
-        const y = BOX.y + rnd(10, BOX.h - 10);
-        const x = BOX.x + rnd(10, BOX.w - 10);
-        blt(BOX.x - 6,         y,  spd, 0);
+        const y = BOX.y + rnd(10, BOX.h - 10), x = BOX.x + rnd(10, BOX.w - 10);
+        blt(BOX.x - 6,        y,  spd, 0);
         blt(BOX.x + BOX.w + 6, y, -spd, 0);
-        blt(x, BOX.y - 6,         0,  spd);
+        blt(x, BOX.y - 6,        0,  spd);
         blt(x, BOX.y + BOX.h + 6, 0, -spd);
         yield 220;
     }
@@ -183,14 +208,109 @@ function* atk_allsides(d) {
 function* atk_drift(d) {
     const n = 8 + (d * 5 | 0), spd = 1.8 + d * 1.6;
     for (let i = 0; i < n; i++) {
-        blt(BOX.x + rnd(0, BOX.w), BOX.y - 6,
-            rnd(-1, 1) * (0.6 + d * 0.8), spd);
+        blt(BOX.x + rnd(0, BOX.w), BOX.y - 6, rnd(-1, 1) * (0.6 + d * 0.8), spd);
         yield 110;
     }
 }
 
-const PATTERNS = [atk_rain, atk_sides, atk_aimed, atk_spiral,
-                  atk_wall, atk_corners, atk_allsides, atk_drift];
+// ── Beam patterns ─────────────────────────────────────────────────────────────
+function* atk_beam_h(d) {
+    const count = 1 + (d * 2 | 0);
+    const ys = [];
+    for (let i = 0; i < count; i++) {
+        let y, tries = 0;
+        do { y = BOX.y + 28 + rnd(0, BOX.h - 56); } while (ys.some(p => Math.abs(p - y) < 44) && ++tries < 20);
+        ys.push(y);
+        addBeam('h', y, 950, 580 + d * 320);
+    }
+    yield 950 + 580 + d * 320 + 300;
+}
+
+function* atk_beam_v(d) {
+    const count = 1 + (d * 1.5 | 0);
+    const xs = [];
+    for (let i = 0; i < count; i++) {
+        let x, tries = 0;
+        do { x = BOX.x + 32 + rnd(0, BOX.w - 64); } while (xs.some(p => Math.abs(p - x) < 52) && ++tries < 20);
+        xs.push(x);
+        addBeam('v', x, 950, 580 + d * 320);
+    }
+    yield 950 + 580 + d * 320 + 300;
+}
+
+function* atk_beam_cross(d) {
+    const rounds = 1 + (d * 1 | 0);
+    for (let r = 0; r < rounds; r++) {
+        const y = BOX.y + 34 + rnd(0, BOX.h - 68);
+        const x = BOX.x + 34 + rnd(0, BOX.w - 68);
+        addBeam('h', y, 1050, 680);
+        addBeam('v', x, 1050, 680);
+        yield 2100;
+    }
+}
+
+function* atk_beam_rapid(d) {
+    const count = 3 + (d * 2 | 0);
+    for (let i = 0; i < count; i++) {
+        const axis = Math.random() < 0.5 ? 'h' : 'v';
+        const pos  = axis === 'h'
+            ? BOX.y + 22 + rnd(0, BOX.h - 44)
+            : BOX.x + 24 + rnd(0, BOX.w - 48);
+        addBeam(axis, pos, 680, 420);
+        yield 780;
+    }
+    yield 500;
+}
+
+// ── Spear patterns (Undyne-style) ─────────────────────────────────────────────
+function* atk_spears(d) {
+    const waves = 2 + (d * 2 | 0);
+    for (let w = 0; w < waves; w++) {
+        const side  = Math.floor(Math.random() * 4);
+        const count = 3 + (d * 4 | 0);
+        for (let i = 0; i < count; i++) {
+            const t = i / Math.max(count - 1, 1);
+            const pos = side === 0 || side === 2
+                ? BOX.x + 20 + t * (BOX.w - 40)
+                : BOX.y + 20 + t * (BOX.h - 40);
+            addSpear(side, pos, 500 + i * 80, 8 + d * 5);
+        }
+        yield 1900;
+    }
+}
+
+function* atk_spears_aimed(d) {
+    const n = 4 + (d * 4 | 0), spd = 9 + d * 4;
+    for (let i = 0; i < n; i++) {
+        const side = Math.floor(Math.random() * 4);
+        const pos  = side === 0 || side === 2
+            ? Math.max(BOX.x + 10, Math.min(BOX.x + BOX.w - 10, gs.p.x + rnd(-20, 20)))
+            : Math.max(BOX.y + 10, Math.min(BOX.y + BOX.h - 10, gs.p.y + rnd(-20, 20)));
+        addSpear(side, pos, 650, spd);
+        yield 480;
+    }
+}
+
+// ── Bone wall patterns (Papyrus-style) ────────────────────────────────────────
+function* atk_bones(d) {
+    const waves = 3 + (d * 3 | 0), spd = 1.2 + d * 1.5;
+    for (let i = 0; i < waves; i++) {
+        const gapW = Math.max(36, 52 - d * 16);
+        const gapX = BOX.x + rnd(8, BOX.w - gapW - 8);
+        addBone(Math.random() < 0.5 ? spd : -spd, gapX, gapW);
+        yield 920;
+    }
+    yield 700;
+}
+
+// ── Pattern registry ──────────────────────────────────────────────────────────
+const PATTERNS = [
+    atk_rain, atk_sides, atk_aimed, atk_spiral, atk_bulletwall,
+    atk_corners, atk_allsides, atk_drift,
+    atk_beam_h, atk_beam_v, atk_beam_cross, atk_beam_rapid,
+    atk_spears, atk_spears_aimed,
+    atk_bones,
+];
 
 // ── Update ────────────────────────────────────────────────────────────────────
 function update(now, dt) {
@@ -205,10 +325,10 @@ function update(now, dt) {
     // Player movement
     const slow = K['ShiftLeft'] || K['ShiftRight'];
     const spd  = slow ? 1.5 : 3.5;
-    if (K['ArrowLeft']  || K['KeyA']) p.x = Math.max(BOX.x + HEART_R,          p.x - spd);
-    if (K['ArrowRight'] || K['KeyD']) p.x = Math.min(BOX.x + BOX.w - HEART_R,  p.x + spd);
-    if (K['ArrowUp']    || K['KeyW']) p.y = Math.max(BOX.y + HEART_R,          p.y - spd);
-    if (K['ArrowDown']  || K['KeyS']) p.y = Math.min(BOX.y + BOX.h - HEART_R,  p.y + spd);
+    if (K['ArrowLeft']  || K['KeyA']) p.x = Math.max(BOX.x + HEART_R,         p.x - spd);
+    if (K['ArrowRight'] || K['KeyD']) p.x = Math.min(BOX.x + BOX.w - HEART_R, p.x + spd);
+    if (K['ArrowUp']    || K['KeyW']) p.y = Math.max(BOX.y + HEART_R,         p.y - spd);
+    if (K['ArrowDown']  || K['KeyS']) p.y = Math.min(BOX.y + BOX.h - HEART_R, p.y + spd);
 
     // Pattern scheduling
     if (gs.gen) {
@@ -216,7 +336,7 @@ function update(now, dt) {
         if (gs.gDelay <= 0) {
             const { value, done } = gs.gen.next();
             if (done) {
-                gs.gen   = null;
+                gs.gen    = null;
                 gs.nextAt = ms + Math.max(280, 1500 - d * 1100);
             } else {
                 gs.gDelay = value;
@@ -227,36 +347,85 @@ function update(now, dt) {
         gs.gDelay = 0;
     }
 
-    // Move & cull bullets
-    gs.bullets = gs.bullets.filter(b => {
+    // Central hit handler — only fires when not in iframes
+    function tryHit() {
+        if (p.iframes > 0) return false;
+        p.hp--;
+        p.iframes = IFRAME_MS;
+        gs.flash  = 300;
+        if (p.hp <= 0) {
+            gs.over = true;
+            if (gs.elapsed > gs.best) gs.best = gs.elapsed;
+        }
+        return true;
+    }
+
+    // ── Bullets ──
+    for (const b of gs.bullets) {
         b.x += b.vx;
         b.y += b.vy;
-        return b.x > BOX.x - 50 && b.x < BOX.x + BOX.w + 50 &&
-               b.y > BOX.y - 50 && b.y < BOX.y + BOX.h + 50;
-    });
+        if (b.alive && Math.hypot(b.x - p.x, b.y - p.y) < b.r + HEART_R - 1) {
+            if (tryHit()) b.alive = false;
+        }
+        if (b.x < BOX.x - 50 || b.x > BOX.x + BOX.w + 50 ||
+            b.y < BOX.y - 50 || b.y > BOX.y + BOX.h + 50)  b.alive = false;
+    }
+    gs.bullets = gs.bullets.filter(b => b.alive);
 
-    // Collision detection
-    if (p.iframes > 0) {
-        p.iframes -= dt;
-    } else {
-        for (const b of gs.bullets) {
-            if (Math.hypot(b.x - p.x, b.y - p.y) < b.r + HEART_R - 1) {
-                p.hp--;
-                p.iframes = IFRAME_MS;
-                gs.flash  = 300;
-                if (p.hp <= 0) {
-                    gs.over = true;
-                    if (gs.elapsed > gs.best) gs.best = gs.elapsed;
-                }
-                break;
+    // iframes tick (after all collision checks this frame)
+    if (p.iframes > 0) p.iframes -= dt;
+
+    // ── Beams ──
+    for (let i = gs.beams.length - 1; i >= 0; i--) {
+        const b = gs.beams[i];
+        if (b.warnMs > 0) {
+            b.warnMs -= dt;
+        } else {
+            b.activeMs -= dt;
+            // Collision during active phase
+            if (b.axis === 'h') {
+                if (p.y - HEART_R < b.pos + b.thick / 2 && p.y + HEART_R > b.pos - b.thick / 2)
+                    tryHit();
+            } else {
+                if (p.x - HEART_R < b.pos + b.thick / 2 && p.x + HEART_R > b.pos - b.thick / 2)
+                    tryHit();
             }
+            if (b.activeMs <= 0) gs.beams.splice(i, 1);
         }
     }
+
+    // ── Spears ──
+    for (const s of gs.spears) {
+        if (!s.alive) continue;
+        if (s.warnMs > 0) {
+            s.warnMs -= dt;
+        } else {
+            if (!s.launched) s.launched = true;
+            s.tipX += s.dx * s.spd;
+            s.tipY += s.dy * s.spd;
+            const tailX = s.tipX - s.dx * s.len, tailY = s.tipY - s.dy * s.len;
+            if (segHitsCircle(tailX, tailY, s.tipX, s.tipY, p.x, p.y, HEART_R + 3))
+                if (tryHit()) s.alive = false;
+            if (s.tipX < BOX.x - 80 || s.tipX > BOX.x + BOX.w + 80 ||
+                s.tipY < BOX.y - 80 || s.tipY > BOX.y + BOX.h + 80)  s.alive = false;
+        }
+    }
+    gs.spears = gs.spears.filter(s => s.alive);
+
+    // ── Bone walls ──
+    for (const w of gs.bones) {
+        if (!w.alive) continue;
+        w.pos += w.vy;
+        // Safe if player center is inside the gap
+        const inWallY = p.y + HEART_R > w.pos && p.y - HEART_R < w.pos + w.thick;
+        const inGap   = p.x > w.gapX && p.x < w.gapX + w.gapW;
+        if (inWallY && !inGap) tryHit();
+        if (w.pos > BOX.y + BOX.h + 20 || w.pos + w.thick < BOX.y - 20) w.alive = false;
+    }
+    gs.bones = gs.bones.filter(w => w.alive);
 }
 
 // ── Draw ──────────────────────────────────────────────────────────────────────
-
-// Pixel-art heart (7 × 6 grid)
 const HEART_PIX = [
     [0,1,1,0,1,1,0],
     [1,1,1,1,1,1,1],
@@ -274,43 +443,39 @@ function drawHeart(x, y, ps = 2.2) {
                 X.fillRect(x - W / 2 + c * ps, y - H / 2 + r * ps, ps, ps);
 }
 
-function fmt(secs) {
-    const m = Math.floor(secs / 60);
-    const s = (secs % 60).toFixed(2).padStart(5, '0');
-    return `${m}:${s}`;
+function fmt(s) {
+    const m = Math.floor(s / 60);
+    return `${m}:${(s % 60).toFixed(2).padStart(5, '0')}`;
 }
 
 function draw(now) {
     const p    = gs.p;
     const slow = K['ShiftLeft'] || K['ShiftRight'];
 
-    // ── Background ──
     X.fillStyle = '#000';
     X.fillRect(0, 0, C.width, C.height);
 
-    // ── Title ──
+    // Title
     X.textAlign = 'center';
     X.fillStyle = '#fff';
     X.font = 'bold 26px "Courier New"';
     X.fillText('* SURVIVE *', C.width / 2, 40);
-
     X.font = '11px "Courier New"';
     X.fillStyle = '#555';
-    X.fillText('WASD / Arrows to move  ·  hold SHIFT to focus (slow)', C.width / 2, 57);
+    X.fillText('WASD / Arrows  ·  SHIFT to focus', C.width / 2, 57);
 
-    // ── Timer ──
+    // Timer (left)
     X.textAlign = 'left';
     X.fillStyle = '#fff';
     X.font = 'bold 19px "Courier New"';
     X.fillText(`TIME  ${fmt(gs.elapsed)}`, 18, 96);
-
     if (gs.best > 0) {
         X.fillStyle = '#888';
         X.font = '13px "Courier New"';
         X.fillText(`BEST  ${fmt(gs.best)}`, 18, 114);
     }
 
-    // ── Threat level ──
+    // Threat level (right)
     const lvl = Math.min(10, (diff() * 10 | 0) + 1);
     X.textAlign = 'right';
     X.fillStyle = lvl >= 8 ? '#ff6644' : lvl >= 5 ? '#ffaa22' : '#888';
@@ -318,20 +483,114 @@ function draw(now) {
     X.fillText(`THREAT LV ${lvl}`, C.width - 18, 96);
     X.fillStyle = '#444';
     X.font = '11px "Courier New"';
-    X.fillText(`${gs.bullets.length} bullets active`, C.width - 18, 114);
+    const tot = gs.bullets.length + gs.spears.filter(s => s.launched).length;
+    X.fillText(`${tot} active`, C.width - 18, 114);
 
-    // ── Battle box (flash red when hit) ──
+    // Box flash on hit
     if (gs.flash > 0) {
-        const alpha = Math.min(0.25, gs.flash / 300 * 0.25);
-        X.fillStyle = `rgba(255,0,0,${alpha})`;
+        X.fillStyle = `rgba(255,0,0,${gs.flash / 300 * 0.22})`;
         X.fillRect(BOX.x, BOX.y, BOX.w, BOX.h);
     }
-    const boxAlpha = gs.flash > 0 ? Math.min(1, gs.flash / 80) : 0;
-    X.strokeStyle = boxAlpha > 0
-        ? `rgba(255,${Math.round(255*(1-boxAlpha))},${Math.round(255*(1-boxAlpha))},1)`
+    X.strokeStyle = gs.flash > 0
+        ? `rgb(255,${Math.round(180 * (1 - gs.flash / 300))},${Math.round(180 * (1 - gs.flash / 300))})`
         : '#fff';
     X.lineWidth = 3;
     X.strokeRect(BOX.x, BOX.y, BOX.w, BOX.h);
+
+    // ── Draw beams ──
+    for (const b of gs.beams) {
+        X.save();
+        if (b.warnMs > 0) {
+            // Flickering warning line — speeds up as beam approaches
+            const fast  = b.warnMs < 280;
+            const pulse = Math.floor(b.warnMs / (fast ? 45 : 90)) % 2;
+            X.globalAlpha = pulse ? 0.95 : 0.2;
+            X.strokeStyle = '#ffff55';
+            X.lineWidth = 2;
+            X.setLineDash([8, 5]);
+            X.beginPath();
+            if (b.axis === 'h') { X.moveTo(BOX.x, b.pos); X.lineTo(BOX.x + BOX.w, b.pos); }
+            else                 { X.moveTo(b.pos, BOX.y); X.lineTo(b.pos, BOX.y + BOX.h); }
+            X.stroke();
+        } else {
+            // Active beam: glow + solid body + bright core
+            const fade = Math.min(1, b.activeMs / 80);
+            X.globalAlpha = fade;
+            // Outer glow
+            X.fillStyle = 'rgba(180,210,255,0.3)';
+            if (b.axis === 'h') X.fillRect(BOX.x, b.pos - b.thick / 2 - 6, BOX.w, b.thick + 12);
+            else                X.fillRect(b.pos - b.thick / 2 - 6, BOX.y, b.thick + 12, BOX.h);
+            // Main body
+            X.fillStyle = '#fff';
+            if (b.axis === 'h') X.fillRect(BOX.x, b.pos - b.thick / 2, BOX.w, b.thick);
+            else                X.fillRect(b.pos - b.thick / 2, BOX.y, b.thick, BOX.h);
+            // Bright core
+            X.fillStyle = '#c8e4ff';
+            if (b.axis === 'h') X.fillRect(BOX.x, b.pos - 3, BOX.w, 6);
+            else                X.fillRect(b.pos - 3, BOX.y, 6, BOX.h);
+        }
+        X.restore();
+    }
+
+    // ── Draw spears ──
+    for (const s of gs.spears) {
+        if (!s.alive) continue;
+        X.save();
+        if (!s.launched) {
+            // Warning triangle at box edge, pointing inward
+            const fast  = s.warnMs < 220;
+            const pulse = Math.floor(s.warnMs / (fast ? 40 : 85)) % 2;
+            X.globalAlpha = pulse ? 1 : 0.25;
+            X.fillStyle = '#ffffff';
+            X.translate(s.warnX, s.warnY);
+            X.rotate(Math.atan2(s.dy, s.dx));
+            X.beginPath();
+            X.moveTo(11, 0);
+            X.lineTo(-7, -7);
+            X.lineTo(-7,  7);
+            X.closePath();
+            X.fill();
+        } else {
+            // Active spear: thick line with glowing tip
+            const tailX = s.tipX - s.dx * s.len, tailY = s.tipY - s.dy * s.len;
+            X.strokeStyle = '#ffffff';
+            X.lineWidth = 7;
+            X.lineCap = 'round';
+            X.beginPath();
+            X.moveTo(tailX, tailY);
+            X.lineTo(s.tipX, s.tipY);
+            X.stroke();
+            // Bright tip dot
+            X.fillStyle = '#99ccff';
+            X.beginPath();
+            X.arc(s.tipX, s.tipY, 4, 0, Math.PI * 2);
+            X.fill();
+        }
+        X.restore();
+    }
+
+    // ── Draw bone walls ──
+    for (const w of gs.bones) {
+        if (!w.alive) continue;
+        X.save();
+        X.fillStyle = '#fff';
+        const cy    = w.pos + w.thick / 2;
+        const gapEnd = w.gapX + w.gapW;
+        // Left segment
+        const lW = w.gapX - BOX.x;
+        if (lW > 0) X.fillRect(BOX.x, w.pos, lW, w.thick);
+        // Right segment
+        const rW = BOX.x + BOX.w - gapEnd;
+        if (rW > 0) X.fillRect(gapEnd, w.pos, rW, w.thick);
+        // Bone knobs at segment ends (give it the classic bone look)
+        const knobR = w.thick * 0.72;
+        for (const kx of [BOX.x, w.gapX, gapEnd, BOX.x + BOX.w]) {
+            X.beginPath();
+            X.arc(kx, cy, knobR, 0, Math.PI * 2);
+            X.fill();
+        }
+        X.restore();
+    }
 
     // ── Bullets ──
     for (const b of gs.bullets) {
@@ -341,14 +600,12 @@ function draw(now) {
         X.fill();
     }
 
-    // ── Heart (blink during iframes) ──
+    // ── Heart ──
     if (!gs.over) {
         const blink = p.iframes > 0 && (Math.floor(p.iframes / 80) % 2 === 0);
         if (!blink) drawHeart(p.x, p.y);
-
-        // Show hitbox circle while focused (SHIFT held)
         if (slow) {
-            X.strokeStyle = 'rgba(255,180,180,0.8)';
+            X.strokeStyle = 'rgba(255,180,180,0.85)';
             X.lineWidth = 1;
             X.beginPath();
             X.arc(p.x, p.y, HEART_R, 0, Math.PI * 2);
@@ -357,8 +614,7 @@ function draw(now) {
     }
 
     // ── HP bar ──
-    const bw = 184, bh = 17;
-    const bx = (C.width - bw) / 2, by = BOX.y + BOX.h + 18;
+    const bw = 184, bh = 17, bx = (C.width - bw) / 2, by = BOX.y + BOX.h + 18;
     X.fillStyle = '#0d0000';
     X.fillRect(bx, by, bw, bh);
     const frac = Math.max(0, p.hp / HP_MAX);
@@ -372,29 +628,25 @@ function draw(now) {
     X.font = '12px "Courier New"';
     X.fillText(`HP  ${Math.max(0, p.hp)} / ${HP_MAX}`, C.width / 2, by + 12);
 
-    // Controls reminder (bottom)
+    // Bottom hint
     X.fillStyle = '#333';
     X.font = '11px "Courier New"';
     X.fillText('Z / Enter / Space  —  restart after game over', C.width / 2, C.height - 10);
 
-    // ── Game Over overlay ──
+    // ── Game Over ──
     if (gs.over) {
         X.fillStyle = 'rgba(0,0,0,0.84)';
         X.fillRect(0, 0, C.width, C.height);
-
         X.textAlign = 'center';
         X.fillStyle = '#fff';
         X.font = 'bold 36px "Courier New"';
         X.fillText('* YOU DIED *', C.width / 2, C.height / 2 - 86);
-
         X.font = '17px "Courier New"';
         X.fillStyle = '#aaa';
         X.fillText('You survived for', C.width / 2, C.height / 2 - 28);
-
         X.font = 'bold 30px "Courier New"';
         X.fillStyle = '#ffdd44';
         X.fillText(fmt(gs.elapsed), C.width / 2, C.height / 2 + 12);
-
         if (gs.best > 0) {
             const isNew = gs.elapsed >= gs.best - 0.001;
             X.fillStyle = isNew ? '#44ff88' : '#888';
@@ -404,8 +656,6 @@ function draw(now) {
                 C.width / 2, C.height / 2 + 50
             );
         }
-
-        // Blinking prompt
         if (Math.floor(now / 600) % 2 === 0) {
             X.fillStyle = '#fff';
             X.font = '17px "Courier New"';
